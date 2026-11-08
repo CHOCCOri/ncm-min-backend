@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>云音乐同步 · 最小后端</title>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      margin: 0; font-family: ui-sans-serif, system-ui, "PingFang SC", "Noto Sans SC", sans-serif;
+      background: #f4efe6; color: #2b241c;
+    }
+    header {
+      padding: 18px 22px; background: #2b241c; color: #f4efe6;
+      display: flex; justify-content: space-between; align-items: center; gap: 12px;
+    }
+    header strong { letter-spacing: .04em; }
+    button, input {
+      font: inherit; border-radius: 999px; border: 1px solid #c9bba8; background: #fff;
+      padding: 8px 14px;
+    }
+    button { cursor: pointer; background: #c45c26; color: #fff; border-color: #c45c26; }
+    button.ghost { background: transparent; color: inherit; border-color: #8a7b68; }
+    header button.ghost { color: #f4efe6; border-color: #8a7b68; }
+    main { max-width: 960px; margin: 0 auto; padding: 20px; }
+    .card {
+      background: #fffdf8; border: 1px solid #e4d7c4; border-radius: 16px;
+      padding: 16px; margin-bottom: 16px;
+    }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    #qr { width: 220px; height: 220px; background: #fff; border-radius: 12px; }
+    .list { display: grid; gap: 8px; }
+    .item {
+      display: grid; grid-template-columns: 48px 1fr auto; gap: 10px; align-items: center;
+      padding: 8px; border-radius: 12px;
+    }
+    .item:hover { background: #f7f0e6; }
+    .item img { width: 48px; height: 48px; border-radius: 8px; object-fit: cover; background: #eee; }
+    .muted { color: #7a6d5d; font-size: 13px; }
+    .hint { font-size: 13px; color: #7a6d5d; line-height: 1.5; }
+    audio { width: 100%; margin-top: 10px; }
+    h2 { font-size: 16px; margin: 0 0 10px; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>云音乐同步</strong>
+    <div class="row">
+      <span id="who" class="muted"></span>
+      <button id="loginBtn" type="button">用网易云扫码登录</button>
+      <button id="outBtn" class="ghost" type="button" hidden>退出</button>
+    </div>
+  </header>
+  <main>
+    <section id="gate" class="card">
+      <h2>把网易云歌单接到你的网站</h2>
+      <p class="hint">每人用自己的网易云 App 扫码。私钥留在这台后端，不会进 GitHub Pages。</p>
+      <div id="qrBox" hidden>
+        <img id="qr" alt="登录二维码" />
+        <p class="hint" id="qrHint">打开网易云 App 扫码确认</p>
+        <p class="hint" id="qrLink"></p>
+      </div>
+    </section>
+    <section id="app" hidden>
+      <div class="card">
+        <div class="row">
+          <input id="q" placeholder="搜歌" />
+          <button id="searchBtn" type="button">搜索</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2>正在播</h2>
+        <div id="now" class="muted">还没选歌。开放平台有版权的才会给播放地址，没有就跳转网易云。</div>
+        <audio id="player" controls></audio>
+      </div>
+      <div class="card">
+        <h2>我的歌单</h2>
+        <div id="pls" class="list"></div>
+      </div>
+      <div class="card">
+        <h2 id="trackTitle">歌曲</h2>
+        <div id="tracks" class="list"></div>
+      </div>
+    </section>
+  </main>
+  <script src="/ncm-client.js"></script>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    NCM.base = location.origin;
+
+    function cover(url) {
+      return url || "data:image/svg+xml," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48"><rect fill="#eee" width="48" height="48"/></svg>');
+    }
+
+    async function boot() {
+      if (!NCM.loggedIn()) return;
+      try {
+        const { profile } = await NCM.me();
+        $("who").textContent = (profile && (profile.nickname || profile.nickName)) || "已登录";
+        $("loginBtn").hidden = true;
+        $("outBtn").hidden = false;
+        $("gate").hidden = true;
+        $("app").hidden = false;
+        const data = await NCM.playlists();
+        renderPlaylists([].concat(data.created || [], data.collected || []));
+      } catch (err) {
+        if (err.status === 401) NCM.session = "";
+        console.warn(err);
+      }
+    }
+
+    function renderPlaylists(list) {
+      $("pls").innerHTML = "";
+      list.forEach((p) => {
+        const el = document.createElement("div");
+        el.className = "item";
+        el.innerHTML = `<img src="${cover(p.cover)}" alt=""><div><div>${escapeHtml(p.name || "")}</div><div class="muted">${p.trackCount || 0} 首 · ${p.kind === "created" ? "我创建" : "我收藏"}</div></div>`;
+        el.onclick = () => openPlaylist(p);
+        $("pls").appendChild(el);
+      });
+    }
+
+    function renderSongs(list, title) {
+      $("trackTitle").textContent = title || "歌曲";
+      $("tracks").innerHTML = "";
+      list.forEach((s) => {
+        const el = document.createElement("div");
+        el.className = "item";
+        el.innerHTML = `<img src="${cover(s.cover)}" alt=""><div><div>${escapeHtml(s.name || "")}</div><div class="muted">${escapeHtml(s.artists || "")}</div></div><button type="button">播放</button>`;
+        el.querySelector("button").onclick = (ev) => { ev.stopPropagation(); playSong(s); };
+        $("tracks").appendChild(el);
+      });
+    }
+
+    async function openPlaylist(p) {
+      const { tracks } = await NCM.tracks(p.id);
+      renderSongs(tracks, p.name);
+    }
+
+    async function playSong(s) {
+      $("now").textContent = "正在取播放地址… " + (s.name || "");
+      try {
+        const detail = await NCM.song(s.id);
+        if (detail.playUrl) {
+          $("player").src = detail.playUrl;
+          $("player").play().catch(() => {});
+          $("now").textContent = (s.name || "") + " · 开放平台直链（约 20 分钟有效）";
+        } else {
+          $("now").textContent = (s.name || "") + " · 此渠道没有播放权，已为你打开网易云";
+          window.open("https://music.163.com/#/search/m/?s=" + encodeURIComponent(s.name || ""), "_blank");
+        }
+      } catch (err) {
+        $("now").textContent = err.message;
+      }
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
+    function asQrImage(url) {
+      if (!url) return "";
+      if (url.startsWith("data:image") || /\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(url)) return url;
+      return "https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=" + encodeURIComponent(url);
+    }
+
+    $("loginBtn").onclick = async () => {
+      $("qrBox").hidden = false;
+      $("qrHint").textContent = "打开网易云 App 扫码确认";
+      $("qrLink").textContent = "";
+      try {
+        await NCM.login((url) => {
+          $("qr").src = asQrImage(url);
+          $("qrLink").textContent = "二维码出不来时，用网易云打开返回的登录链接。";
+        });
+        await boot();
+      } catch (err) {
+        $("qrHint").textContent = err.message;
+      }
+    };
+    $("outBtn").onclick = async () => {
+      await NCM.logout();
+      location.reload();
+    };
+    $("searchBtn").onclick = async () => {
+      const q = $("q").value.trim();
+      if (!q) return;
+      const { songs } = await NCM.search(q);
+      renderSongs(songs, "搜索：" + q);
+    };
+    boot();
+  </script>
+</body>
+</html>
